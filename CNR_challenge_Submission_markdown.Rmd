@@ -1,0 +1,820 @@
+---
+title: "CNR Wind Power forecasting"
+author: "L. Chenin"
+date: "22/06/2020"
+output: 
+  pdf_document:
+     latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## 1. Overview
+
+This is a report on the challenge made by Compagnie Nationale du Rhone (CNR) - the French leading producer of exclusively renewable energy (water, wind, sun) - on hourly wind energy production forecast.
+
+CNR currently owns around 50 Wind Farms (WF) for a total installed capacity of more than 600 MW. Every day, CNR sells on the energy market its wind energy production for the day ahead. In order to sell the right amount of energy, as well as for legal requirements towards the French Transmission System Operator (TSO) in charge of the electric network stability, CNR needs to know beforehand how much energy the wind farms will produce the day ahead. 
+
+see https://challengedata.ens.fr/participants/challenges/34/
+
+The goal of this challenge is to predict the energy production of six Wind Farms (WF) owned by CNR. Each WF production will be individually predicted, using meteorological forecasts as input. Predictions will focus on the day-ahead energy production (hourly production forecasts from day D+1 00h to day D+2 00h).
+
+The data set was retrieved after login at the above link and uploaded at
+
+https://github.com/lchenin/CNR_challenge_2020
+
+The project assignment I made from this goal is to elaborate two prediction models of the six Wind Farm train sets based on the arima algorithm from the R forecast package and the random forest algorithm from the R random forest package on the six Wind Farm test sets and compare the metrics they arrived at (77 and 80 respectively) to the benchmark metric of CNR (31).
+
+As these figures are pretty high, a number of refinements have to be further studied to improve the model(s). 
+
+The report is structured as follows: 
+
+* Section 1 outlines the problem, describes the dataset and the key steps of the analysis;
+
+* Section 2 checks the data and explains the prediction model used; 
+
+* Section 3 presents the modeling result and discusses the model performance;  
+
+* Section 4 concludes with a brief summary of the report, its limitations and future work. 
+
+
+### 1.1.	Problem definition & objective
+
+The project assignment consists in forecasting wind production for the test period that runs from January the 16th of 2019 to September the 30rd of 2019 (8 months and 15 days), provided that data for the train period that runs from May the 1st of 2018 to January the 15th of 2019 (8 months and 15 days) is used. Evaluation will be performed by the challenge provider, CNR, on raw observed hourly WF power production. As a consequence, comparison will be made between this metric and CNR benchmark.   
+
+The objective I will follow is to run a prediction model and compare it to the metric value obtained from their submission to CNR.
+
+The metric used to rank the predicting performance is a relative form of the absolute error. CNR, the challenge provider call it the CAPE (Cumulated Absolute Percentage Error). The formulation of CAPE for one WF would be the following:
+
+$$ \text{CAPE}_{k}\left( {\widehat{Y}}_{k},Y_{k} \right) = 100 \times \frac{\sum_{i = 1}^{N_{k}}\left| Y_{i,k} - {\widehat{Y}}_{i,k} \right|}{\sum_{i = 1}^{N_{k}}Y_{i,k}}$$ ```
+
+with $CAPE_{k}$ 
+is the metric for the WF k, 
+$N_{k}$ 
+is the length of the test set for WF k,  
+$Y_{i,k}$
+is  the observed production for WF k and hour i (MW or MW.h) and 
+$${\widehat{Y}}_{i,k}$$ 
+is the predicted production for WF k and hour i (MW or MW.h).
+
+For convenience reasons, data relative to the 6 WF have been regrouped in the same train and test input files. Therefore, the metric used in the challenge is the overall average CAPE for the 6 WF, calculated as:
+
+$$ \text{CAPE}\left( \widehat{Y},Y \right) = 100 \times \frac{\sum_{i = 1}^{M}\left| Y_{i} - {\widehat{Y}}_{i} \right|}{\sum_{i = 1}^{M}Y_{i}}$$ 
+
+This formulation results in a non-homogeneous contribution of all the WF to the final value of CAPE: CAPE will be more sensitive to WF with the highest energy production values.
+
+### 1.2.	Dataset
+
+The dataset provided is the combined six WF train and test data. The test production file is random and given by the challenge provider as a template for file submission. 
+
+the description made by the challenge provider is as follows:
+
+ID: This is the unique ID of each row in the csv files. One ID correspond to a couple Time / WF. The ID of the test set are consecutive to the ID of the training set.
+
+WF: The considered Wind Farm. WF ranges from WF1 to WF6. It is crucial for the competitors to be aware that this prediction problem is totally dependent to the WF considered. In other words, the statistical link between input variables and wind power production is completely different from one WF to another. Consequently, it could be judicious to train specific prediction algorithms for each WF, instead of training a unique algorithm which could be unable to model the behavior of each WF.
+
+Time (UTC): date and hour of the target timestep, i.e. corresponding to the observed Power production. Time zone is Coordinated Universal Time (UTC).
+
+Meteorological variables: Numerical Weather Predictions are provided by meteorological centers several times a day (updates), typically at 00h UTC, 06h UTC, 12h UTC and 18h UTC. We call these sets of forecasts "Runs". Consequently, if the input file contains forecasts arising from several runs, this implies that a single NWP is associated with several forecasts for the same forecasting time. Therefore, the information on the hour of run is provided.
+
+The format of the header of the csv files for the meteorological variables is the following:
+
+NWPi_HourOfTheRun_DayOfTheRun_Variable
+
+With NWPi the considered Numerical Weather Prediction model (meteorological model);
+
+HourOfTheRun the hour (UTC) of the considered run. According to the NWP, it could be 00h, 06h, 12h and 18h (case of NWP with 4 runs per day) or only 00h and 12h (case of NWP with 2 runs per day);
+
+DayOfTheRun the day of the considered run. We provide in the csv files predictions from the D_2 day runs (the day before yesterday), D_1 day runs (yesterday) and D day runs;
+
+Variables of the different meteorological variables forecasted by the NWP. These are essentially U, V and T:
+
+U and V components of the wind at 100m (or 10m) height (m/s): these are the zonal and meridional velocities of the wind, respectively. Both are given at a height of 100m above ground for
+NWP1, NWP2 and NWP3. U and V are given at a height of 10m for NWP4. Even if these variables are given 
+at hourly timestep, we draw competitors attention on the fact that the temporal representativity of 
+the given values is for a 10-minutes window ranging from H-10 min to H.
+
+Additional remark: since wind power production is principally driven by the wind speed impacting turbines, it could be useful for the competitors to derive wind speed (and wind direction) from U and V. This can be done using a simple trigonometric calculation of the magnitude and direction of a vector with U and V components. The choice is let to the competitors.
+
+Temperature of air (°C), abbreviated T: this is the averaged temperature over the entire hour (from H-1 to H). Wind power production is sensitive to air temperature since it affects the air density. This variable is provided only for NWP1 and NWP3.
+
+Total cloud cover (%), abbreviated CLCT: this is the total cloud cover of the sky, ranging from 0% (clear sky, no cloud) to 100% (fully clouded sky). The value is an instant value at hour H. This variable is provided only for NWP4.
+
+The data sets have been uploaded from 
+https://challengedata.ens.fr/participants/challenges/34/ 
+to 
+https://github.com/lchenin/CNR_challenge_2020 
+in order to get them accessible when running an R script.
+
+### 1.3.	Key steps of analysis 
+
+The analysis is performed in the following sequence of steps:
+
+* Data check for a review in terms of tidiness and completeness.  
+
+* Data split of the train and test sets into six WF train and test sets as prediction is recommended to be made on individual WF.
+
+* Data exploration of these WF train and test sets, including visualisation of distributions and/or relationship between variables (or predictors) to serve as guidance for the development of an appropriate prediction model.
+
+* Data aggregation of combined predictors, such as wind speed.   
+
+* Model development and running on the test set to derive figure of merits as per the challenge provider metric. 
+
+## 2.	Analysis
+### 2.1.	Data check 
+The train and test data sets are conform to the description made by the challenge provider: X_train has 37,375 observations of 102 predictors labelled NWPi_xxyh_ with D_2 or D_1 or D followed bu _U, or _V, or _T or _CLCT as the case may be, and 3 variables, ID, numbered from 1 to 37,375, WF as a character "WFi" with i = 1 to 6 and Time, defined as a character, but identified as a date by hour ("01/05/2018 01:00" in the dmy manner) .
+
+The same applies to X_test for teh same 102 predictors and 36,529 observations.
+
+
+```{r}
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate", repos = "http://cran.us.r-project.org")
+if(!require(forecast)) install.packages("forecast", repos = "http://cran.us.r-project.org")
+if(!require(randomForest)) install.packages("randomForest", repos = "http://cran.us.r-project.org")
+
+X_test <- read_csv("https://raw.github.com/lchenin/CNR_challenge_2020/master/X_test_v21.csv")
+X_train <- read_csv("https://raw.github.com/lchenin/CNR_challenge_2020/master/X_train_v21.csv")
+Y_test_r <- read_csv("https://raw.github.com/lchenin/CNR_challenge_2020/master/Y_test_random.csv")
+Y_train <- read_csv("https://raw.github.com/lchenin/CNR_challenge_2020/master/Y_train_sl9m6Jh.csv")
+
+length(X_train$WF =="WF1")
+```
+there is a lot of NA's 
+
+```{r}
+
+sum(is.na(X_train))/102/37375  # or 46 % of the content is NA
+
+sum(is.na(X_test))/102/36529 # or 76 %  of the content is NA 
+
+sum(Y_train == 0)/37375 # or 9.4 % of the content is zero
+```
+that we set to zero
+```{r}
+X_test[is.na(X_test)] <- 0
+X_train[is.na(X_train)] <- 0
+```
+
+We start by grouping the wind farms WF1 to WF6 and check the train set for their counts or numbers of observations. All have 6,239 counts excep WF5 for 6,180.
+for the test set, the same discrepancy appears, with all WF groupings at 6,190 except WF5 at 5,579.
+
+```{r}
+X_train %>% group_by(WF) %>%
+  summarize(count = n()) %>%
+  arrange(desc(count))
+
+X_test %>% group_by(WF) %>%
+  summarize(count = n()) %>%
+  arrange(desc(count))
+```
+We bind the test and train production figures for plotting
+```{r} 
+X_test <- X_test %>% cbind(Y_test_r[,2])
+X_train <- X_train %>% cbind(Y_train[,2])
+```
+and get the following plots
+```{r}
+WFs <- c("WF1", "WF2", "WF3", "WF4", "WF5", "WF6")
+X_train %>% filter(WF %in% WFs) %>% ggplot(aes(x = dmy_hm(Time), y = Production)) +
+  geom_line(size = 1, color = "darkgrey") +
+  geom_smooth(method = "loess") +
+  facet_wrap(~WF)
+
+X_test %>% filter(WF %in% WFs) %>% ggplot(aes(x = dmy_hm(Time), y = Production)) +
+  geom_line(size = 1, color = "darkgrey") +
+  geom_smooth(method = "loess") +
+  facet_wrap(~WF)
+```
+the Y_test is effectively random and serves as a template for the prediction submission.
+
+the hourly count of production is plotted
+
+```{r}
+WFs <- c("WF1", "WF2", "WF3", "WF4", "WF5", "WF6")
+X_train %>% filter(WF %in% WFs) %>% 
+  ggplot(aes(Production)) + geom_histogram(binwidth = 0.1) + 
+  ggtitle("Hourly count X_train") + 
+  facet_wrap(~WF)
+```
+the majority of no hourly production is born by WF1.
+
+### 2.2.	Model development 
+As there is a lot of missing values in the 102 predictors, a first idea was to aggregate some of the predictors to get an estimation of the wind tuRbine production. As the wind speed to the power three is proportionnal to the wind production, we computed the 36 wind speed that can be derived from the 4 NWPs, and add them altogether to get a unique 'predictor'.
+
+```{r}
+X_train <- X_train %>% mutate(V1 = (NWP1_00h_D_1_U^2 + NWP1_00h_D_1_V^2)^1.5,
+           V2 = (NWP1_06h_D_1_U^2 + NWP1_06h_D_1_V^2)^1.5,
+           V3 = (NWP1_12h_D_1_U^2 + NWP1_12h_D_1_V^2)^1.5,
+           V4 = (NWP1_18h_D_1_U^2 + NWP1_18h_D_1_V^2)^1.5,
+           V5 = (NWP2_00h_D_1_U^2 + NWP2_00h_D_1_V^2)^1.5,
+           V6 = (NWP2_12h_D_1_U^2 + NWP2_12h_D_1_V^2)^1.5,
+           V7 = (NWP3_00h_D_1_U^2 + NWP3_00h_D_1_V^2)^1.5,
+           V8 = (NWP3_06h_D_1_U^2 + NWP3_06h_D_1_V^2)^1.5,
+           V9 = (NWP3_12h_D_1_U^2 + NWP3_12h_D_1_V^2)^1.5,
+           V10 = (NWP3_18h_D_1_U^2 + NWP3_18h_D_1_V^2)^1.5,
+           V11 = (NWP4_00h_D_1_U^2 + NWP4_00h_D_1_V^2)^1.5,
+           V12 = (NWP4_12h_D_1_U^2 + NWP4_12h_D_1_V^2)^1.5, 
+           V13 = (NWP1_00h_D_2_U^2 + NWP1_00h_D_2_V^2)^1.5,
+           V14 = (NWP1_06h_D_2_U^2 + NWP1_06h_D_2_V^2)^1.5,
+           V15 = (NWP1_12h_D_2_U^2 + NWP1_12h_D_2_V^2)^1.5,
+           V16 = (NWP1_18h_D_2_U^2 + NWP1_18h_D_2_V^2)^1.5,
+           V17 = (NWP2_00h_D_2_U^2 + NWP2_00h_D_2_V^2)^1.5,
+           V18 = (NWP2_12h_D_2_U^2 + NWP2_12h_D_2_V^2)^1.5,
+           V19 = (NWP3_00h_D_2_U^2 + NWP3_00h_D_2_V^2)^1.5,
+           V20 = (NWP3_06h_D_2_U^2 + NWP3_06h_D_2_V^2)^1.5,
+           V21 = (NWP3_12h_D_2_U^2 + NWP3_12h_D_2_V^2)^1.5,
+           V22 = (NWP3_18h_D_2_U^2 + NWP3_18h_D_2_V^2)^1.5,
+           V23 = (NWP4_00h_D_2_U^2 + NWP4_00h_D_2_V^2)^1.5,
+           V24 = (NWP4_12h_D_2_U^2 + NWP4_12h_D_2_V^2)^1.5, 
+           V25 = (NWP1_00h_D_U^2 + NWP1_00h_D_V^2)^1.5,
+           V26 = (NWP1_06h_D_U^2 + NWP1_06h_D_V^2)^1.5,
+           V27 = (NWP1_12h_D_U^2 + NWP1_12h_D_V^2)^1.5,
+           V28 = (NWP1_18h_D_U^2 + NWP1_18h_D_V^2)^1.5,
+           V29 = (NWP2_00h_D_U^2 + NWP2_00h_D_V^2)^1.5,
+           V30 = (NWP2_12h_D_U^2 + NWP2_12h_D_V^2)^1.5,
+           V31 = (NWP3_00h_D_U^2 + NWP3_00h_D_V^2)^1.5,
+           V32 = (NWP3_06h_D_U^2 + NWP3_06h_D_V^2)^1.5,
+           V33 = (NWP3_12h_D_U^2 + NWP3_12h_D_V^2)^1.5,
+           V34 = (NWP3_18h_D_U^2 + NWP3_18h_D_V^2)^1.5,
+           V35 = (NWP4_00h_D_U^2 + NWP4_00h_D_V^2)^1.5,
+           V36 = (NWP4_12h_D_U^2 + NWP4_12h_D_V^2)^1.5, 
+           tot = V1+V2+V3+V4+V5+V6+V7+V8+V9+V10+V11+V12+
+             V13+V14+V15+V16+V17+V18+V19+V20+V21+V22+V23+V24+
+             V25+V26+V27+V28+V29+V30+V31+V32+V33+V34+V35+V36)
+
+X_test <- X_test %>% mutate(V1 = (NWP1_00h_D_1_U^2 + NWP1_00h_D_1_V^2)^1.5,
+                                V2 = (NWP1_06h_D_1_U^2 + NWP1_06h_D_1_V^2)^1.5,
+                                V3 = (NWP1_12h_D_1_U^2 + NWP1_12h_D_1_V^2)^1.5,
+                                V4 = (NWP1_18h_D_1_U^2 + NWP1_18h_D_1_V^2)^1.5,
+                                V5 = (NWP2_00h_D_1_U^2 + NWP2_00h_D_1_V^2)^1.5,
+                                V6 = (NWP2_12h_D_1_U^2 + NWP2_12h_D_1_V^2)^1.5,
+                                V7 = (NWP3_00h_D_1_U^2 + NWP3_00h_D_1_V^2)^1.5,
+                                V8 = (NWP3_06h_D_1_U^2 + NWP3_06h_D_1_V^2)^1.5,
+                                V9 = (NWP3_12h_D_1_U^2 + NWP3_12h_D_1_V^2)^1.5,
+                                V10 = (NWP3_18h_D_1_U^2 + NWP3_18h_D_1_V^2)^1.5,
+                                V11 = (NWP4_00h_D_1_U^2 + NWP4_00h_D_1_V^2)^1.5,
+                                V12 = (NWP4_12h_D_1_U^2 + NWP4_12h_D_1_V^2)^1.5, 
+                                V13 = (NWP1_00h_D_2_U^2 + NWP1_00h_D_2_V^2)^1.5,
+                                V14 = (NWP1_06h_D_2_U^2 + NWP1_06h_D_2_V^2)^1.5,
+                                V15 = (NWP1_12h_D_2_U^2 + NWP1_12h_D_2_V^2)^1.5,
+                                V16 = (NWP1_18h_D_2_U^2 + NWP1_18h_D_2_V^2)^1.5,
+                                V17 = (NWP2_00h_D_2_U^2 + NWP2_00h_D_2_V^2)^1.5,
+                                V18 = (NWP2_12h_D_2_U^2 + NWP2_12h_D_2_V^2)^1.5,
+                                V19 = (NWP3_00h_D_2_U^2 + NWP3_00h_D_2_V^2)^1.5,
+                                V20 = (NWP3_06h_D_2_U^2 + NWP3_06h_D_2_V^2)^1.5,
+                                V21 = (NWP3_12h_D_2_U^2 + NWP3_12h_D_2_V^2)^1.5,
+                                V22 = (NWP3_18h_D_2_U^2 + NWP3_18h_D_2_V^2)^1.5,
+                                V23 = (NWP4_00h_D_2_U^2 + NWP4_00h_D_2_V^2)^1.5,
+                                V24 = (NWP4_12h_D_2_U^2 + NWP4_12h_D_2_V^2)^1.5, 
+                                V25 = (NWP1_00h_D_U^2 + NWP1_00h_D_V^2)^1.5,
+                                V26 = (NWP1_06h_D_U^2 + NWP1_06h_D_V^2)^1.5,
+                                V27 = (NWP1_12h_D_U^2 + NWP1_12h_D_V^2)^1.5,
+                                V28 = (NWP1_18h_D_U^2 + NWP1_18h_D_V^2)^1.5,
+                                V29 = (NWP2_00h_D_U^2 + NWP2_00h_D_V^2)^1.5,
+                                V30 = (NWP2_12h_D_U^2 + NWP2_12h_D_V^2)^1.5,
+                                V31 = (NWP3_00h_D_U^2 + NWP3_00h_D_V^2)^1.5,
+                                V32 = (NWP3_06h_D_U^2 + NWP3_06h_D_V^2)^1.5,
+                                V33 = (NWP3_12h_D_U^2 + NWP3_12h_D_V^2)^1.5,
+                                V34 = (NWP3_18h_D_U^2 + NWP3_18h_D_V^2)^1.5,
+                                V35 = (NWP4_00h_D_U^2 + NWP4_00h_D_V^2)^1.5,
+                                V36 = (NWP4_12h_D_U^2 + NWP4_12h_D_V^2)^1.5, 
+                                tot = V1+V2+V3+V4+V5+V6+V7+V8+V9+V10+V11+V12+
+                                  V13+V14+V15+V16+V17+V18+V19+V20+V21+V22+V23+V24+
+                                  V25+V26+V27+V28+V29+V30+V31+V32+V33+V34+V35+V36)
+```
+As this data project is clearly related to time series, we used Hyndman, R.J., & Athanasopoulos, G. (2018) Forecasting: principles and practice, 2nd edition, OTexts: Melbourne, Australia. OTexts.com/fpp2. 
+And particularly section 12.8 Forecasting on training and test sets, to fit an arima model to the above unique 'predictor'.
+
+We split the data set, train and test into six wind farm specific train and test sets:
+
+```{r}
+# split the train and test sets into 6 sub-sets for the six WF 
+
+X1_train <- filter(X_train, WF == "WF1") 
+
+X2_train <- filter(X_train, WF == "WF2")
+X3_train <- filter(X_train, WF == "WF3")
+
+X4_train <- filter(X_train, WF == "WF4")
+X5_train <- filter(X_train, WF == "WF5")
+
+X6_train <- filter(X_train, WF == "WF6")
+
+X1_test <- filter(X_test, WF == "WF1")
+
+X2_test <- filter(X_test, WF == "WF2")
+X3_test <- filter(X_test, WF == "WF3")
+
+X4_test <- filter(X_test, WF == "WF4")
+X5_test <- filter(X_test, WF == "WF5")
+
+X6_test <- filter(X_test, WF == "WF6")
+```
+and apply an auto.arima algorithm from the R package forecast to the variable `tot`, as a first tool and then apply a random forest algorithm from the R package randomforest to the same variable `tot`.
+
+All production is positive or zero, and maximum is limited in the wind farms by the turbine number and rating, obtained from the supplementary data set provided (review of this supplemantary set is not included):
+
+WF1 for 10.14 MW comprising 4 turbines of power 2.25 MW each, or 10.0
+WF2 for 11.92 MW comprising 6 turbines of power 2.0 MW each, or 12.0
+WF3 for 13.47 MW comprising 6 turbines of power 2.25 MW each, or 13.5
+WF4 for  9.05 MW comprising 4 turbines of power 2.25 MW each, or 10.0
+WF5 for 11.97 MW comprising 6 turbines of power 2.25 MW each, or 13.5
+WF6 for  5.07 MW comprising 2 turbines of power 2.0 MW each, or 5.0
+```{r}
+max(X1_train$Production)
+max(X2_train$Production)
+max(X3_train$Production)
+max(X4_train$Production)
+max(X5_train$Production)
+max(X6_train$Production)
+
+```
+The model developed has not been constrained with these low and high values and this is a direction for improving the prediction.
+
+## 3.	Model development and performance
+
+### 3.1.	Arima 
+we start with wind farm WF1 for the first training set and make a plot of the variable 'tot' to look for similarity to the production train and apply the auto.arima algorithm:
+```{r}
+# Arima procedure on mutated 'tot' 
+
+tot<- ts(X1_train$tot)
+
+plot(tot)
+
+auto.arima(tot)
+
+# Series: tot 
+# ARIMA(5,1,5) 
+
+# Coefficients:
+#   ar1      ar2     ar3     ar4     ar5     ma1     ma2     ma3     ma4      ma5
+# -1.2254  -1.1678  0.2221  0.4537  0.4295  0.9415  0.6856  0.1521  0.0321  -0.1273
+# s.e.   0.0609   0.0844  0.0864  0.0447  0.0259  0.0611  0.0707  0.0593  0.0473   0.0263
+
+# sigma^2 estimated as 41300161:  log likelihood=-63544.81
+# AIC=127111.6   AICc=127111.7   BIC=127185.8
+```
+and and order c(5,1,5) is to be applied to get a fitting model.
+
+```{r}
+X1.train <- Arima(tot, order=c(5,1,5))
+
+X1_train_fit <- fitted(X1.train)
+```
+is the fit correct?  
+```{r}
+
+autoplot(tot) + autolayer(X1_train_fit)
+```
+we observe that neagtive values are predicted! then we normalize X1_train_fit and compare/ correlate to Y1_train. Negative values will be set to zero. 
+
+```{r}
+Y1_train <- ts(select(X1_train, Production)) 
+
+autoplot(X1_train_fit/30000) + autolayer(Y1_train)
+```
+Even if the peak is normalized, there are numbers of regions where the fit is not correct.
+
+Now for the test part, we fit the arima model from the train set:
+```{r}
+
+totest<- ts(X1_test$tot)
+
+plot(totest)
+
+X1.test <- Arima(totest, model = X1.train)
+
+X1_predic <- fitted(X1.test)
+
+autoplot(totest) + autolayer(X1_predic)
+```
+and also normalize X1_predic for comparison / correlation to max(Y1_test) that is unknown => take max(Y1_train)
+
+```{r}
+autoplot(X1_predic/15000) # by inspection of maximum close to 10.0 
+
+Y1_test <- X1_predic/15000
+```
+
+we repeat the above for the five wind farms WF2 to WF6.
+
+```{r}
+# now for all WFs # 2 to 6
+
+# WF 2 Arima procedure on mutated 'tot' 
+
+tot<- ts(X2_train$tot)
+
+plot(tot)
+
+auto.arima(tot)
+
+# ARIMA(5,1,3) with drift 
+
+# Coefficients:
+#   ar1      ar2     ar3     ar4     ar5     ma1     ma2     ma3    drift
+# -0.8077  -0.9033  0.2204  0.0733  0.1868  0.4006  0.3923  0.2021  -1.4281
+# s.e.   0.0579   0.0697  0.0403  0.0441  0.0400  0.0575  0.0564  0.0209  38.0953
+
+# sigma^2 estimated as 11334074:  log likelihood=-59511.98
+# AIC=119043.9   AICc=119044   BIC=119111.3 
+
+X2.train <- Arima(tot, order=c(5,1,3))
+
+X2_train_fit <- fitted(X2.train)
+
+autoplot(tot) + autolayer(X2_train_fit)
+
+# normalize X2_train_fit and compare/ correlate to Y2_train
+
+Y2_train <- ts(select(X2_train, Production)) 
+
+autoplot(X2_train_fit/12000) + autolayer(Y2_train)
+
+# second work with the test set
+
+totest<- ts(X2_test$tot)
+
+plot(totest)
+
+X2.test <- Arima(totest, model = X2.train)
+
+X2_predic <- fitted(X2.test)
+
+autoplot(totest) + autolayer(X2_predic)
+
+# normalize X2_predic and compare/ correlate to max(Y2_test) that is unknown => take max(Y2_train)
+
+autoplot(X2_predic/10500) # by inspection of maximum close to 12.0 
+
+Y2_test <- X2_predic/10500
+
+# WF 3 Arima procedure on mutated 'tot' 
+
+tot<- ts(X3_train$tot)
+
+plot(tot)
+
+auto.arima(tot)
+
+# Series: tot 
+# ARIMA(3,1,3) 
+
+# Coefficients:
+#   ar1      ar2     ar3     ma1     ma2     ma3
+# -0.5532  -0.5331  0.3894  0.1948  0.2113  0.2273
+# s.e.   0.0334   0.0332  0.0326  0.0334  0.0228  0.0169
+
+# sigma^2 estimated as 8872060:  log likelihood=-58749.55
+# AIC=117513.1   AICc=117513.1   BIC=117560.3
+
+X3.train <- Arima(tot, order=c(3,1,3))
+
+X3_train_fit <- fitted(X3.train)
+
+autoplot(tot) + autolayer(X3_train_fit)
+
+# normalize X3_train_fit and compare/ correlate to Y3_train
+
+Y3_train <- ts(select(X3_train, Production)) 
+
+autoplot(X3_train_fit/12000) + autolayer(Y3_train)
+
+# second work with the test set
+
+totest<- ts(X3_test$tot)
+
+plot(totest)
+
+X3.test <- Arima(totest, model = X3.train)
+
+X3_predic <- fitted(X3.test)
+
+autoplot(totest) + autolayer(X3_predic)
+
+# normalize X3_predic and compare/ correlate to max(Y3_test) that is unknown => take max(Y3_train)
+
+autoplot(X3_predic/8500) # by inspection of maximum close to 13.5 
+
+Y3_test <- X3_predic/8500
+
+# WF 4 Arima procedure on mutated 'tot' 
+
+tot<- ts(X4_train$tot)
+
+plot(tot)
+
+auto.arima(tot)
+
+# Series: tot 
+# ARIMA(5,1,3) 
+
+# Coefficients:
+#   ar1     ar2     ar3      ar4      ar5      ma1      ma2     ma3
+# -0.0098  0.1930  0.7041  -0.2151  -0.3882  -0.4376  -0.3576  0.3331
+# s.e.   0.0521  0.0522  0.0231   0.0398   0.0369   0.0510   0.0537  0.0180
+
+# sigma^2 estimated as 17221103:  log likelihood=-60817.44
+# AIC=121652.9   AICc=121652.9   BIC=121713.5
+
+X4.train <- Arima(tot, order=c(5,1,3))
+
+X4_train_fit <- fitted(X4.train)
+
+autoplot(tot) + autolayer(X4_train_fit)
+
+# normalize X4_train_fit and compare/ correlate to Y4_train
+
+Y4_train <- ts(select(X4_train, Production)) 
+
+autoplot(X4_train_fit/15000) + autolayer(Y4_train)
+
+# second work with the test set
+
+totest<- ts(X4_test$tot)
+
+plot(totest)
+
+X4.test <- Arima(totest, model = X4.train)
+
+X4_predic <- fitted(X4.test)
+
+autoplot(totest) + autolayer(X4_predic)
+
+# normalize X4_predic and compare/ correlate to max(Y4_test) that is unknown => take max(Y4_train)
+
+autoplot(X4_predic/11000) # by inspection of maximum close to 9.0 
+
+Y4_test <- X4_predic/11000
+
+# WF 5 Arima procedure on mutated 'tot' 
+
+tot<- ts(X5_train$tot)
+
+plot(tot)
+
+auto.arima(tot)
+
+# Series: tot 
+# ARIMA(3,1,3) 
+
+# Coefficients:
+#   ar1      ar2     ar3     ma1     ma2     ma3
+# -0.6152  -0.5894  0.3343  0.1012  0.1462  0.2912
+# s.e.   0.0345   0.0344  0.0337  0.0337  0.0192  0.0148
+
+# sigma^2 estimated as 15300141:  log likelihood=-59877.79
+# AIC=119769.6   AICc=119769.6   BIC=119816.7
+
+X5.train <- Arima(tot, order=c(3,1,3))
+
+X5_train_fit <- fitted(X5.train)
+
+autoplot(tot) + autolayer(X5_train_fit)
+
+# normalize X3_train_fit and compare/ correlate to Y3_train
+
+Y5_train <- ts(select(X5_train, Production)) 
+
+autoplot(X5_train_fit/15000) + autolayer(Y5_train)
+
+# second work with the test set
+
+totest<- ts(X5_test$tot)
+
+plot(totest)
+
+X5.test <- Arima(totest, model = X5.train)
+
+X5_predic <- fitted(X5.test)
+
+autoplot(totest) + autolayer(X5_predic)
+
+# normalize X5_predic and compare/ correlate to max(Y5_test) that is unknown => take max(Y5_train)
+
+autoplot(X5_predic/10000) # by inspection of maximum close to 12.0 
+
+Y5_test <- X5_predic/10000
+
+# WF 6 Arima procedure on mutated 'tot' 
+
+tot<- ts(X6_train$tot)
+
+plot(tot)
+
+auto.arima(tot)
+
+# Series: tot 
+# ARIMA(3,1,1) 
+
+# Coefficients:
+#   ar1      ar2     ar3      ma1
+# -0.2579  -0.2399  0.6842  -0.1608
+# s.e.   0.0147   0.0135  0.0132   0.0197
+
+# sigma^2 estimated as 9352680:  log likelihood=-58915.01
+# AIC=117840   AICc=117840   BIC=117873.7
+
+X6.train <- Arima(tot, order=c(3,1,1))
+
+X6_train_fit <- fitted(X6.train)
+
+autoplot(tot) + autolayer(X6_train_fit)
+
+# normalize X6_train_fit and compare/ correlate to Y6_train
+
+Y6_train <- ts(select(X6_train, Production)) 
+
+autoplot(X6_train_fit/18000) + autolayer(Y6_train)
+
+# second work with the test set
+
+totest<- ts(X6_test$tot)
+
+plot(totest)
+
+X6.test <- Arima(totest, model = X6.train)
+
+X6_predic <- fitted(X6.test)
+
+autoplot(totest) + autolayer(X6_predic)
+
+# normalize X6_predic and compare/ correlate to max(Y6_test) that is unknown => take max(Y6_train)
+
+autoplot(X6_predic/14000) # by inspection of maximum close to 5.0 
+
+Y6_test <- X6_predic/14000
+```
+We summarize the prediction in a single data frame and write the export file as follows:
+
+````{r}
+# recap all Y_predict or Y1_test to Y6_test
+
+Yt <-   rbind(as.data.frame(as.matrix(Y1_test)), 
+              as.data.frame(as.matrix(Y2_test)),
+              as.data.frame(as.matrix(Y3_test)), 
+              as.data.frame(as.matrix(Y4_test)),
+              as.data.frame(as.matrix(Y5_test)), 
+              as.data.frame(as.matrix(Y6_test))) 
+
+colnames(Yt) <- c("Production")
+
+Yt1 <-  select(Y_test_r, ID)
+
+Y_true10 <- cbind(Yt1, Yt)
+
+Y_true10 <- replace(Y_true10, Y_true10 < 0, 0)
+
+plot(ts(Y_true10[,2]))
+
+write.csv(Y_true10, row.names = FALSE, paste0("Y_true_10",".csv"))
+```
+from the challenge provider metric, when submitting the above file, the score is 77, well above the benchmark of 31.7, the best score of the competitors being 29.6.
+A lot of improvements is to be looked for.
+
+### 3.2.	Random forest 
+
+the random forest is used on the 102+37 = 139 predictors
+```{r}
+# 1 
+
+mat1 <- select(X1_train,  starts_with("NWP"), V1:V36, tot)
+
+mat1t <- select(X1_test,  starts_with("NWP"), V1:V36, tot)
+
+model1 <- randomForest(x = as.matrix(mat1), y = as.matrix(X1_train$Production),
+                       ntree = 46) # number of trees
+
+# check out the details
+model1
+
+y_hat1 <- predict(model1, as.matrix(mat1t))
+
+plot(as.ts(3*y_hat1))
+
+# 2 
+
+mat2 <- select(X2_train,  starts_with("NWP"), V1:V36, tot)
+
+mat2t <- select(X2_test,  starts_with("NWP"), V1:V36, tot)
+
+model2 <- randomForest(x = as.matrix(mat2), y = as.matrix(X2_train$Production),
+                       ntree = 46) # number of trees
+
+# check out the details
+model2
+
+y_hat2 <- predict(model2, as.matrix(mat2t))
+
+plot(as.ts(8*y_hat2))
+
+# 3
+
+mat3 <- select(X3_train,  starts_with("NWP"), V1:V36, tot)
+
+mat3t <- select(X3_test,  starts_with("NWP"), V1:V36, tot)
+
+model3 <- randomForest(x = as.matrix(mat3), y = as.matrix(X3_train$Production),
+                       ntree = 46) # number of trees
+
+# check out the details
+model3
+
+y_hat3 <- predict(model3, as.matrix(mat3t))
+
+plot(as.ts(7.2*y_hat3))
+
+# 4 
+
+mat4 <- select(X4_train,  starts_with("NWP"), V1:V36, tot)
+
+mat4t <- select(X4_test,  starts_with("NWP"), V1:V36, tot)
+
+model4 <- randomForest(x = as.matrix(mat4), y = as.matrix(X4_train$Production),
+                       ntree = 46) # number of trees
+
+# check out the details
+model4
+
+y_hat4 <- predict(model4, as.matrix(mat4t))
+
+plot(as.ts(8.5*y_hat4))
+
+# 5
+
+mat5 <- select(X5_train,  starts_with("NWP"), V1:V36, tot)
+
+mat5t <- select(X5_test,  starts_with("NWP"), V1:V36, tot)
+
+model5 <- randomForest(x = as.matrix(mat5), y = as.matrix(X5_train$Production),
+                       ntree = 46) # number of trees
+
+# check out the details
+model5
+
+y_hat5 <- predict(model5, as.matrix(mat5t))
+
+plot(as.ts(10*y_hat5))
+
+# 6 
+
+mat6 <- select(X6_train,  starts_with("NWP"), V1:V36, tot)
+
+mat6t <- select(X6_test,  starts_with("NWP"), V1:V36, tot)
+
+model6 <- randomForest(x = as.matrix(mat6), y = as.matrix(X6_train$Production),
+                       ntree = 46) # number of trees
+
+# check out the details
+model6
+
+y_hat6 <- predict(model6, as.matrix(mat6t))
+
+plot(as.ts(4*y_hat6))
+
+# recap all Y_predict or Y1 to 6 _ test
+
+Yt <-   rbind(as.data.frame(as.matrix(y_hat1)), 
+              as.data.frame(as.matrix(y_hat2)),
+              as.data.frame(as.matrix(y_hat3)), 
+              as.data.frame(as.matrix(y_hat4)),
+              as.data.frame(as.matrix(y_hat5)), 
+              as.data.frame(as.matrix(y_hat6))) 
+
+colnames(Yt) <- c("Production")
+
+Yt1 <-  select(Y_test_r, ID)  
+
+Y_true11 <- cbind(Yt1, Yt)
+
+sum(Y_true11 < 0)
+
+write.csv(Y_true11, row.names = FALSE, paste0("Y_true_11",".csv"))
+
+plot(ts(Y_true11[,2]))
+```
+from the challenge provider metric, when submitting the above file, the score is 80, well above the benchmark of 31.7, the best score of the competitors being 29.6.
+However it seems a little less than Arima.
+Still a lot of improvements is required and is to be looked for.
+
+
+## 4. Summary and conclusion
+
+This project is an opportunity to discover the time series prediction domain, and practice R. 
+I selected this challenge, as the data is not that heavy and workable, but I still have to find the tools to complement and assess the missing data in the train set (46 % of the predictors content is NA) so that in a first step, I can smartly complement the missing data in the test set (76 % of the predictors content is NA, and what if this percentage is decreased to 46 % as the challenge provider hinted?)
+
+Another direction to go is to apply auto.arima to the Xi_train$Production to 'correct', so to speak the auto.arima then applied to the `tot` variable has been so to speak 'trained' on the train set.
+
+For instance the ARIMA(5,1,5) from `tot` in WF1 corresponds ot an ARIMA(0,1,2) for `X1_train$Production`. 
+Also the use of the sum of production, tot from the 36 hourly production might not be appropriate, and is not sanctionned by a dedicated regression. 
+
+For that matter, an idea to be explored could be to use the auto.arima to provide not so randomly generated figures to complement the predictor missing values.
+
+On the other model used, the random forest does not present negative values but some how the minimum values are well above zero for WF2, WF3, WF4, which is not satisfactory. I am still left to further dig out this point.
+
+And finally I have to browse through the numerous models of the caret package to explore other models to better my score, and combine models as combining results improve scores. 
